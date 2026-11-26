@@ -11,7 +11,7 @@
 // under MAKEFUN_OUTPUT_DIR, never into the repository, and never changes the
 // permissions of anything it does not own.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-frontend.ts';
@@ -19,10 +19,13 @@ import { buildDossier } from './vendor/makefun-frontend.ts';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// Start from a clean output directory so stale files from an earlier run
-// can never leak into the hand-in.
-if (existsSync(out)) rmSync(out, { recursive: true, force: true });
+// The grader runs as uid 65534 with /output owned by root: the output
+// directory itself must never be removed, renamed or chmodded — only its
+// contents may be cleared. (Round 1 did rmSync(out) and died EPERM here.)
 mkdirSync(out, { recursive: true });
+for (const entry of readdirSync(out)) {
+  rmSync(join(out, entry), { recursive: true, force: true });
+}
 
 cpSync(join(here, 'app'), join(out, 'app'), { recursive: true });
 if (existsSync(join(here, 'screenshots'))) {
@@ -43,6 +46,24 @@ writeFileSync(
     app_max_bytes: 16777216,
   }),
 );
+
+// The hand-in is collected by another user than the one running this
+// program, and the repository's own files are mode 0660, so every file and
+// directory written under the output directory is left world-readable
+// (files 0644, directories 0755). Only entries this program itself created
+// are touched; the output directory itself is never chmodded.
+const makeWorldReadable = (dir: string): void => {
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) {
+      chmodSync(p, 0o755);
+      makeWorldReadable(p);
+    } else {
+      chmodSync(p, 0o644);
+    }
+  }
+};
+makeWorldReadable(out);
 
 // Verify the hand-in is complete before reporting success: the site's entry
 // page, at least one screenshot, and the dossier must all be present.
